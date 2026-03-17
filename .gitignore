@@ -1,0 +1,10 @@
+sessions/
+*.session
+*.session-journal
+*.log
+.env
+__pycache__/
+*.pyc
+*.pyo
+session_*.txt
+.DS_Store
