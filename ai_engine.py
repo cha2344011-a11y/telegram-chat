@@ -4,6 +4,7 @@ Handles all AI response generation using Google Gemini API.
 """
 
 import google.generativeai as genai
+genai.configure  # ensure v1 endpoint used
 import asyncio
 import logging
 import random
@@ -17,7 +18,7 @@ class AIEngine:
     def __init__(self, api_key: str):
         genai.configure(api_key=api_key)
         self.model = genai.GenerativeModel(
-            model_name="gemini-2.0-flash",
+            model_name="gemini-1.5-flash-latest",
             generation_config=genai.types.GenerationConfig(
                 temperature=0.92,       # High creativity for natural responses
                 top_p=0.95,
