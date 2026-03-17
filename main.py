@@ -49,12 +49,12 @@ async def main():
     from personalities import get_personality
     
     # ========== CONFIG ==========
-    gemini_key = os.environ.get("GEMINI_API_KEY", "")
-    if not gemini_key:
-        logger.error("❌ GEMINI_API_KEY not set! Please add it to .env")
+    openai_key = os.environ.get("OPENAI_API_KEY", "")
+    if not openai_key:
+        logger.error("❌ OPENAI_API_KEY not set! Please add it to .env")
         sys.exit(1)
     
-    ai_engine = AIEngine(api_key=gemini_key)
+    ai_engine = AIEngine(api_key=openai_key)
     
     # Parse target groups
     groups_raw = os.environ.get("TARGET_GROUPS", "")
