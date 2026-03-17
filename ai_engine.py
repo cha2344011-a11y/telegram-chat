@@ -1,23 +1,22 @@
 """
 ai_engine.py
-Handles all AI response generation using Google Gemini API (new google-genai SDK).
+Handles all AI response generation using OpenAI ChatGPT API.
 """
 
-from google import genai
-from google.genai import types
-import asyncio
+from openai import AsyncOpenAI
 import logging
 import random
 import re
 from typing import Optional
+import base64
 
 logger = logging.getLogger(__name__)
 
 
 class AIEngine:
     def __init__(self, api_key: str):
-        self.client = genai.Client(api_key=api_key)
-        self.model_name = "gemini-1.5-flash"
+        self.client = AsyncOpenAI(api_key=api_key)
+        self.model_name = "gpt-4o-mini"  # Cheap + fast + smart
         # Per-conversation memory: {chat_id: [messages]}
         self.conversation_history: dict = {}
         self.MAX_HISTORY = 10
@@ -25,12 +24,12 @@ class AIEngine:
     def _get_history(self, chat_id: int) -> list:
         return self.conversation_history.get(chat_id, [])
 
-    def _add_to_history(self, chat_id: int, role: str, text: str):
+    def _add_to_history(self, chat_id: int, role: str, content):
         if chat_id not in self.conversation_history:
             self.conversation_history[chat_id] = []
         self.conversation_history[chat_id].append({
             "role": role,
-            "parts": [{"text": text}]
+            "content": content
         })
         # Keep only last MAX_HISTORY messages
         if len(self.conversation_history[chat_id]) > self.MAX_HISTORY * 2:
@@ -40,27 +39,20 @@ class AIEngine:
     def _add_human_imperfections(self, text: str, personality: dict) -> str:
         """Add occasional typos and imperfections to make text more human"""
         typing_style = personality.get("typing_style", {})
-
         if not typing_style.get("occasional_typos", False):
             return text
-
-        # Only add typos 15% of the time
         if random.random() > 0.15:
             return text
-
-        # Common Hinglish typos
         typo_map = {
             "kya": "kyaa",
             "bhai": "bhia",
             "nahi": "nhi",
             "yaar": "yar",
         }
-
         for correct, typo in typo_map.items():
             if correct in text.lower() and random.random() < 0.3:
                 text = text.replace(correct, typo, 1)
                 break
-
         return text
 
     async def generate_response(
@@ -74,7 +66,7 @@ class AIEngine:
         image_path: Optional[str] = None
     ) -> Optional[str]:
         """
-        Generate a human-like response using Gemini (new google-genai SDK).
+        Generate a human-like response using OpenAI GPT.
         Returns None if bot decides to stay silent.
         """
         try:
@@ -86,10 +78,7 @@ class AIEngine:
                     for m in context_messages[-5:]
                 ])
 
-            full_prompt = f"""{system_prompt}
-
----
-CURRENT GROUP CHAT CONTEXT (recent messages):
+            user_prompt = f"""CURRENT GROUP CHAT CONTEXT (recent messages):
 {context_str}
 
 ---
@@ -106,42 +95,43 @@ INSTRUCTIONS:
 - Reply in Hinglish (Hindi+English mix) naturally
 """
 
-            # Build contents list
-            contents = []
+            # Build message content (with image if present)
             if image_path:
                 try:
-                    import PIL.Image
-                    img = PIL.Image.open(image_path)
-                    contents.append(img)
+                    with open(image_path, "rb") as img_file:
+                        img_data = base64.b64encode(img_file.read()).decode("utf-8")
+                    user_content = [
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/jpeg;base64,{img_data}",
+                                "detail": "low"
+                            }
+                        },
+                        {"type": "text", "text": user_prompt}
+                    ]
                 except Exception as e:
                     logger.error(f"Error loading image: {e}")
-            contents.append(full_prompt)
+                    user_content = user_prompt
+            else:
+                user_content = user_prompt
 
-            # Generate response using new SDK
-            response = await asyncio.to_thread(
-                self.client.models.generate_content,
+            # Build messages list with history
+            history = self._get_history(chat_id)
+            messages = [{"role": "system", "content": system_prompt}]
+            messages.extend(history[-10:])  # Last 10 messages for context
+            messages.append({"role": "user", "content": user_content})
+
+            # Call OpenAI API
+            response = await self.client.chat.completions.create(
                 model=self.model_name,
-                contents=contents,
-                config=types.GenerateContentConfig(
-                    system_instruction=system_prompt,
-                    temperature=0.92,
-                    top_p=0.95,
-                    top_k=40,
-                    max_output_tokens=200,
-                    safety_settings=[
-                        types.SafetySetting(
-                            category="HARM_CATEGORY_HARASSMENT",
-                            threshold="BLOCK_ONLY_HIGH"
-                        ),
-                        types.SafetySetting(
-                            category="HARM_CATEGORY_HATE_SPEECH",
-                            threshold="BLOCK_ONLY_HIGH"
-                        ),
-                    ]
-                )
+                messages=messages,
+                max_tokens=200,
+                temperature=0.92,
+                top_p=0.95,
             )
 
-            reply_text = response.text.strip()
+            reply_text = response.choices[0].message.content.strip()
 
             # Check if bot wants to skip
             if "[SKIP]" in reply_text or reply_text == "[SKIP]":
@@ -154,12 +144,12 @@ INSTRUCTIONS:
 
             # Update history
             self._add_to_history(chat_id, "user", f"{sender_name}: {user_message}")
-            self._add_to_history(chat_id, "model", reply_text)
+            self._add_to_history(chat_id, "assistant", reply_text)
 
             return reply_text
 
         except Exception as e:
-            logger.error(f"Gemini API error: {e}")
+            logger.error(f"OpenAI API error: {e}")
             return None
 
     def _clean_response(self, text: str, personality: dict) -> str:
@@ -172,15 +162,13 @@ INSTRUCTIONS:
         ]
         for phrase in ai_phrases:
             text = re.sub(phrase, '', text, flags=re.IGNORECASE)
-
         max_len = personality.get("typing_style", {}).get("max_response_length", 150)
         if len(text) > max_len:
             text = text[:max_len].rsplit(' ', 1)[0]
-
         return text.strip()
 
     def should_reply(self, reply_chance: float) -> bool:
-        """Randomly decide whether to reply (simulate human selectivity)"""
+        """Randomly decide whether to reply"""
         return random.random() < reply_chance
 
 
@@ -188,7 +176,7 @@ class ConversationMemory:
     """Stores recent chat messages for context"""
 
     def __init__(self, max_messages: int = 20):
-        self.messages: dict = {}  # {chat_id: [messages]}
+        self.messages: dict = {}
         self.max_messages = max_messages
 
     def add_message(self, chat_id: int, sender: str, text: str):
